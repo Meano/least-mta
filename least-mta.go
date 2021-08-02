@@ -3,6 +3,8 @@ package main
 import (
 	"crypto/tls"
 	"errors"
+	"flag"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
@@ -22,34 +24,34 @@ func Send(from string, to string, data []byte) error {
 	log.Printf("====== Start Send from %s to %s ======\n", from, to)
 	addr := to
 
-	_, domain, err := splitAddress(addr)
+	_, mxdomain, err := splitAddress(addr)
 	if err != nil {
 		return err
 	}
 
-	mxs, err := net.LookupMX(domain)
+	mxservers, err := net.LookupMX(mxdomain)
 	if err != nil {
 		return err
 	}
-	if len(mxs) == 0 {
-		mxs = []*net.MX{{Host: domain}}
+	if len(mxservers) == 0 {
+		mxservers = []*net.MX{{Host: mxdomain}}
 	}
 
-	for _, mx := range mxs {
-		c, err := smtp.Dial(mx.Host + ":25")
-		log.Println("Host: ", mx.Host)
+	for _, mxserver := range mxservers {
+		c, err := smtp.Dial(mxserver.Host + ":25")
+		log.Println("Host: ", mxserver.Host)
 		if err != nil {
 			return err
 		}
 
-		if err := c.Hello("localhost"); err != nil {
+		if err := c.Hello(domain); err != nil {
 			return err
 		}
 
 		if ok, _ := c.Extension("STARTTLS"); ok {
 			log.Println("StartTLS!")
 			tlsConfig := &tls.Config{
-				ServerName:         mx.Host,
+				ServerName:         mxserver.Host,
 				InsecureSkipVerify: true,
 			}
 			if err := c.StartTLS(tlsConfig); err != nil {
@@ -150,21 +152,41 @@ func splitAddress(addr string) (local, domain string, err error) {
 	return parts[0], parts[1], nil
 }
 
+var (
+	domain string
+	port   int
+	help   bool
+)
+
+func init() {
+	flag.StringVar(&domain, "domain", "least-mta", "MTA server domain, default: least-mta.")
+	flag.IntVar(&port, "port", 25, "MTA server port, default: 25.")
+	flag.BoolVar(&help, "help", false, "Show help")
+}
+
 func main() {
+	flag.Parse()
+
+	if help {
+		flag.Usage()
+		return
+	}
+
 	be := &Backend{}
 
 	s := smtp.NewServer(be)
 
-	s.Addr = ":25"
-	s.Domain = "localhost"
+	s.Addr = fmt.Sprintf(":%d", port)
+	s.Domain = domain
 	s.ReadTimeout = 10 * time.Second
 	s.WriteTimeout = 10 * time.Second
 	s.MaxMessageBytes = 1024 * 1024
 	s.MaxRecipients = 50
 	s.AllowInsecureAuth = true
 	s.Debug = os.Stdout
+	log.SetOutput(os.Stdout)
 
-	log.Println("Starting server at", s.Addr)
+	log.Printf("Starting server at %s%s", s.Domain, s.Addr)
 	if err := s.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
